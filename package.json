@@ -1,10 +1,13 @@
 {
   "name": "homebridge-radiora",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Homebridge plugin for RadioRA2 from Lutron",
-  "main": "index.js",
+  "main": "build/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "babel index.js --out-dir build",
+    "prepublish": "babel index.js --out-dir build",
+    "lint": "eslint .",
+    "test": "tap --node-arg=-r --node-arg=babel-register tests/*.js"
   },
   "keywords": [
     "homebridge-plugin"
@@ -14,5 +17,21 @@
     "homebridge": ">=0.2.0"
   },
   "author": "Max Metral",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "babel-cli": "^6.8.0",
+    "babel-core": "^6.2.1",
+    "babel-eslint": "^6.0.0",
+    "babel-plugin-syntax-async-functions": "^6.1.18",
+    "babel-plugin-transform-async-to-generator": "^6.8.0",
+    "babel-preset-node6": "^11.0.0",
+    "babel-register": "^6.2.0",
+    "eslint": "^3.0.0",
+    "eslint-config-airbnb": "^9.0.0",
+    "eslint-plugin-import": "^1.6.1",
+    "eslint-plugin-jsx-a11y": "^1.0.4",
+    "eslint-plugin-react": "^5.0.1",
+    "nyc": "^6.4.2",
+    "tap": "^7.0.1"
+  }
 }

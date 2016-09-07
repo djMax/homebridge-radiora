@@ -1,134 +1,70 @@
-'use strict';
-
-var events = require('events');
-var util = require('util');
-var net = require('net');
+import { EventEmitter } from 'events';
+import net from 'net';
 
 // RadioRA2 Platform Shim for HomeBridge
 //
 // Remember to add platform to config.json. Example:
-// "platforms": [
+// 'platforms': [
 //     {
-//         "platform": "RadioRA",             // required
-//         "name": "RadioRA",                 // required
+//         'platform': 'RadioRA',             // required
+//         'name': 'RadioRA',                 // required
 //     }
 // ],
 //
-// When you attempt to add a device, it will ask for a "PIN code".
+// When you attempt to add a device, it will ask for a 'PIN code'.
 // The default code for all HomeBridge accessories is 031-45-154.
 //
 
-function RadioRA(log, config) {
-    events.EventEmitter.call(this);
-    this.config = config;
-    this.log = log;
-    this.log('RadioRA Platform Created');
+const MESSAGE_RECEIVED = 'messageReceived';
 
-    var me = this;
+const priv = Symbol();
+let Service;
+let Characteristic;
 
-    var readyForCommand = false;
-    var loggedIn = false;
-    var socket = null;
-    var state = null;
-    var commandQueue = [];
-    var responderQueue = [];
-
-    function sendUsername(prompt) {
-        if (prompt != "login: ") {
-            log("Bad initial response /" + prompt + "/");
-            return;
-        }
-        socket.write(config.username + "\r\n");
-        state = sendPassword;
+function incomingData(context, data) {
+  const str = String(data);
+  if (/GNET>\s/.test(str)) {
+    if (!context.loggedIn) {
+      context.log('Logged into RadioRA controller');
+      context.loggedIn = context.ready = true;
+      context.ra.emit('loggedIn', true);
     }
-
-    function sendPassword(prompt) {
-        if (prompt != "password: ") {
-            log("Bad login response /" + prompt + "/");
-            return;
-        }
-        state = incomingData;
-        socket.write(config.password + "\r\n");
+    if (context.commandQueue.length) {
+      const msg = context.commandQueue.shift();
+      context.socket.write(msg);
     }
-
-    function incomingData(data) {
-        var str = String(data), m;
-        if (/GNET>\s/.test(str)) {
-            if (!loggedIn) {
-                log('Logged into RadioRA controller');
-            }
-            readyForCommand = true;
-            if (commandQueue.length) {
-                var msg = commandQueue.shift();
-                socket.write(msg);
-            }
-            return;
-        } else if ((m = /^~OUTPUT,(\d+),1,([\d\.]+)/.exec(str))) {
-            me.emit("messageReceived", { type: 'status', id: m[1], level: m[2] });
-        }
-    }
-
-    this.connect = function () {
-        state = sendUsername;
-
-        socket = net.connect(23, config.host);
-        socket.on('data', function (data) {
-            log("RECEIVED>>" + String(data) + "<<");
-            state(data);
-        }).on('connect', function () {
-            log('Connected to RadioRA controller');
-        }).on('end', function () {
-        });
-    };
-    this.sendCommand = function (command) {
-        if (!/\r\n$/.test(command)) {
-            command += "\r\n";
-        }
-        if (readyForCommand) {
-            readyForCommand = false;
-            this.log('Sending ' + command);
-            socket.write(command);
-        } else {
-            commandQueue.push(command);
-        }
-    };
-    this.setDimmer = function (id, level, fade, delay, cb) {
-        if (!cb) { cb = delay; delay = null; }
-        if (!cb) { cb = fade; fade = null; }
-        var result;
-        result = function (msg) {
-            if (msg.type == "status" && id == msg.id) {
-                if (cb) {
-                    cb(msg);
-                }
-                me.removeListener('messageReceived', result);
-            }
-        }
-        me.on('messageReceived', result)
-        var cmd = "#OUTPUT," + id + ",1," + level;
-        if (fade) {
-            cmd += "," + fade;
-            if (delay) {
-                cmd += "," + delay;
-            }
-        }
-        me.sendCommand(cmd);
-    };
-    this.connect();
+    return;
+  }
+  const m = /^~OUTPUT,(\d+),1,([\d\.]+)/.exec(str);
+  if (m) {
+    context.ra.emit(MESSAGE_RECEIVED, {
+      type: 'status',
+      id: Number(m[1]),
+      level: m[2],
+    });
+  }
 }
 
-util.inherits(RadioRA, events.EventEmitter);
+function sendPassword(context, prompt) {
+  if (!/^password:\s*/.test(prompt)) {
+    context.log(`Bad login response /${prompt}/`);
+    return;
+  }
+  context.state = incomingData;
+  context.socket.write(`${context.config.password}\r\n`);
+}
 
-RadioRA.prototype.accessories = function (callback) {
-    this.log("Fetching RadioRA devices.");
-    var items = []
-    for (var i = 0; i < this.config.lights.length; i++) {
-        items.push(new RadioRAItem(this.log, this.config.lights[i], this));
-    }
-    callback(items);
-};
+function sendUsername(context, prompt) {
+  if (!/^login:\s*/.test(prompt)) {
+    context.log(`Bad initial response /${prompt}/`);
+    return;
+  }
+  context.socket.write(`${context.config.username}\r\n`);
+  context.state = sendPassword;
+}
 
-function RadioRAItem(log, item, platform) {
+class RadioRAItem {
+  constructor(log, item, platform) {
     // device info
     this.name = item.name;
     this.model = 'RadioRA';
@@ -136,109 +72,170 @@ function RadioRAItem(log, item, platform) {
     this.serial = item.serial;
     this.log = log;
     this.platform = platform;
+  }
 
-    /*
-        if (use_lan != false && lifx_lan.bulbs[this.deviceId]) {
-            var that = this;
-            this.bulb = lifx_lan.bulbs[this.deviceId];
-    
-            lifx_lan.on('bulbstate', function(bulb) {
-                if (bulb.addr.toString('hex') == that.deviceId) {
-                    that.bulb = bulb;
-    
-                    if (that.service) {
-                        that.service.getCharacteristic(Characteristic.On).setValue(that.bulb.state.power > 0);
-                        that.service.getCharacteristic(Characteristic.Brightness).setValue(Math.round(that.bulb.state.brightness * 100 / 65535));
-    
-                        if (that.capabilities.has_color == true) {
-                            that.service.getCharacteristic(Characteristic.Hue).setValue(Math.round(that.bulb.state.hue * 360 / 65535));
-                            that.service.getCharacteristic(Characteristic.Saturation).setValue(Math.round(that.bulb.state.saturation * 100 / 65535));
-                        }
-                    }
-                }
-            });
-        }
-        */
-}
-
-RadioRAItem.prototype = {
-    get: function (type, callback) {
-        var that = this;
-
-        callback(new Error("Device not found"), false);
-        /*
-        lifx_remote.listLights("id:" + that.deviceId, function (body) {
-            var bulb = JSON.parse(body);
-
-            if (bulb.connected != true) {
-                callback(new Error("Device not found"), false);
-                return;
-            }
-
-            switch (type) {
-                case "power":
-                    callback(null, bulb.power == "on" ? 1 : 0);
-                    break;
-                case "brightness":
-                    callback(null, Math.round(bulb.brightness * 100));
-                    break;
-            }
-        });*/
-    },
-    identify: function (callback) {
-        lifx_remote.breatheEffect("id:" + this.deviceId, 'green', null, 1, 3, false, true, 0.5, function (body) {
-            callback();
+  get(type, callback) {
+    switch (type) {
+      case 'power':
+        this.platform.getDimmer(this.deviceId, (level) => {
+          callback(null, level ? 1 : 0);
         });
-    },
-    setPower: function (state, callback) {
-        var log = this.log;
-        this.platform.setDimmer(this.deviceId, state ? 100 : 0, function (msg) {
-            callback();
+        break;
+      case 'brightness':
+        this.platform.getDimmer(this.deviceId, (level) => {
+          callback(null, level);
         });
-    },
-    setBrightness: function (value, callback) {
-        var log = this.log;
-        this.platform.setDimmer(this.deviceId, value, function (msg) {
-            callback();
-        });
-    },
-    getServices: function () {
-        var that = this;
-        var services = []
-        this.service = new Service.Lightbulb(this.name);
-
-        // gets and sets over the remote api
-        this.service.getCharacteristic(Characteristic.On)
-            .on('get', function (callback) { that.get("power", callback); })
-            .on('set', function (value, callback) { that.setPower(value, callback); });
-
-        this.service.addCharacteristic(Characteristic.Brightness)
-            .on('get', function (callback) { that.get("brightness", callback); })
-            .on('set', function (value, callback) { that.setBrightness(value, callback); });
-
-        services.push(this.service);
-
-        var service = new Service.AccessoryInformation();
-
-        service.setCharacteristic(Characteristic.Manufacturer, "LUTRON")
-            .setCharacteristic(Characteristic.Model, this.model)
-            .setCharacteristic(Characteristic.SerialNumber, this.serial);
-
-        services.push(service);
-
-        return services;
+        break;
+      default:
+        throw new Error('Invalid Characteristic requested');
     }
+  }
+
+  setPower(state, callback) {
+    this.platform.setDimmer(this.deviceId, state ? 100 : 0, () => {
+      callback();
+    });
+  }
+
+  setBrightness(value, callback) {
+    this.platform.setDimmer(this.deviceId, value, () => {
+      callback();
+    });
+  }
+
+  getServices() {
+    const services = [];
+    this.service = new Service.Lightbulb(this.name);
+
+    // gets and sets over the remote api
+    this.service.getCharacteristic(Characteristic.On)
+      .on('get', (callback) => { this.get('power', callback); })
+      .on('set', (value, callback) => { this.setPower(value, callback); });
+
+    this.service.addCharacteristic(Characteristic.Brightness)
+      .on('get', (callback) => { this.get('brightness', callback); })
+      .on('set', (value, callback) => { this.setBrightness(value, callback); });
+
+    services.push(this.service);
+
+    const service = new Service.AccessoryInformation();
+    service.setCharacteristic(Characteristic.Manufacturer, 'LUTRON')
+      .setCharacteristic(Characteristic.Model, this.model)
+      .setCharacteristic(Characteristic.SerialNumber, this.serial);
+    services.push(service);
+
+    return services;
+  }
 }
 
-module.exports.accessory = RadioRAItem;
-module.exports.platform = RadioRA;
+class RadioRA extends EventEmitter {
+  constructor(log, config) {
+    super();
+    log('RadioRA Platform Created');
+    this[priv] = {
+      ra: this,
+      config,
+      log,
+      ready: false,
+      loggedIn: false,
+      socket: null,
+      state: null,
+      commandQueue: [],
+      responderQueue: [],
+    };
+    this.connect();
+  }
 
-var Service, Characteristic;
+  connect() {
+    const p = this[priv];
+    p.state = sendUsername;
 
-module.exports = function (homebridge) {
-    Service = homebridge.hap.Service;
-    Characteristic = homebridge.hap.Characteristic;
+    p.socket = net.connect(23, this[priv].config.host);
+    p.socket.on('data', (data) => {
+      p.log(`RECEIVED>>${String(data)}<<`);
+      p.state(p, data);
+    }).on('connect', () => {
+      p.log('Connected to RadioRA controller');
+    }).on('end', () => { });
+  }
 
-    homebridge.registerAccessory("homebridge-radiora-item", "RadioRAItem", RadioRAItem);
-    homebridge.registerPlatform("homebridge-radiora", "RadioRA", RadioRA);
-};
+  disconnect() {
+    this[priv].socket.end();
+  }
+
+  sendCommand(command) {
+    const p = this[priv];
+    let toSend = command;
+    if (!/\r\n$/.test(toSend)) {
+      toSend += '\r\n';
+    }
+    if (p.ready) {
+      p.log(`Sending ${toSend}`);
+      p.socket.write(toSend);
+    } else {
+      p.log('Adding command to queue');
+      p.commandQueue.push(toSend);
+    }
+  }
+
+  setDimmer(id, level, maybeFade, maybeDelay, maybeCallback) {
+    let cb = maybeCallback;
+    let delay = maybeDelay;
+    let fade = maybeFade;
+    if (!cb) { cb = delay; delay = null; }
+    if (!cb) { cb = fade; fade = null; }
+
+    const result = (msg) => {
+      if (msg.type === 'status' && id === msg.id) {
+        if (cb) {
+          cb(msg);
+        }
+        this.removeListener(MESSAGE_RECEIVED, result);
+      }
+    };
+    this.on(MESSAGE_RECEIVED, result);
+    let cmd = `#OUTPUT,${id},1,${level}`;
+    if (fade) {
+      cmd += `,${fade}`;
+      if (delay) {
+        cmd += `,${delay}`;
+      }
+    }
+    this.sendCommand(cmd);
+  }
+
+  getDimmer(id, callback) {
+    const numId = Number(id);
+    const result = (msg) => {
+      if (msg.type === 'status' && numId === msg.id) {
+        this.removeListener(MESSAGE_RECEIVED, result);
+        callback(msg.level);
+      }
+    };
+    const cmd = `?OUTPUT,${numId}`;
+    this.on(MESSAGE_RECEIVED, result);
+    this.sendCommand(cmd);
+  }
+
+  accessories(callback) {
+    this[priv].log('Fetching RadioRA devices.');
+    const items = [];
+    for (let i = 0; i < this[priv].config.lights.length; i++) {
+      items.push(new RadioRAItem(this.log, this[priv].config.lights[i], this));
+    }
+    callback(items);
+  }
+}
+
+function Homebridge(homebridge) {
+  Service = homebridge.hap.Service;
+  Characteristic = homebridge.hap.Characteristic;
+
+  homebridge.registerAccessory('homebridge-radiora-item', 'RadioRAItem', RadioRAItem);
+  homebridge.registerPlatform('homebridge-radiora', 'RadioRA', RadioRA);
+}
+
+Homebridge.accessory = RadioRAItem;
+Homebridge.platform = RadioRA;
+
+module.exports = Homebridge;
