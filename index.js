@@ -21,27 +21,34 @@ const priv = Symbol();
 let Service;
 let Characteristic;
 
-function incomingData(context, data) {
-  const str = String(data);
-  if (/GNET>\s/.test(str)) {
-    if (!context.loggedIn) {
-      context.log('Logged into RadioRA controller');
-      context.loggedIn = context.ready = true;
-      context.ra.emit('loggedIn', true);
+function incomingData(context, str) {
+  try {
+    if (/GNET>\s/.test(str)) {
+      if (!context.loggedIn) {
+        context.log('Logged into RadioRA controller');
+        context.loggedIn = context.ready = true;
+        context.ra.emit('loggedIn', true);
+      }
+      while (context.commandQueue.length) {
+        const msg = context.commandQueue.shift();
+        context.socket.write(msg);
+      }
+      return;
     }
-    if (context.commandQueue.length) {
-      const msg = context.commandQueue.shift();
-      context.socket.write(msg);
+    const m = /^~OUTPUT,(\d+),1,([\d\.]+)/.exec(str);
+    if (m) {
+      const deviceId = Number(m[1]);
+      context.status[deviceId] = context.status[deviceId] || {};
+      context.status[deviceId].level = m[2];
+      delete context.status[deviceId].inProcess;
+      context.ra.emit(MESSAGE_RECEIVED, {
+        type: 'status',
+        id: deviceId,
+        level: m[2],
+      });
     }
-    return;
-  }
-  const m = /^~OUTPUT,(\d+),1,([\d\.]+)/.exec(str);
-  if (m) {
-    context.ra.emit(MESSAGE_RECEIVED, {
-      type: 'status',
-      id: Number(m[1]),
-      level: m[2],
-    });
+  } catch (error) {
+    context.log(error.message);
   }
 }
 
@@ -70,6 +77,7 @@ class RadioRAItem {
     this.model = 'RadioRA';
     this.deviceId = item.id;
     this.serial = item.serial;
+    this.isSwitch = item.type === 'switch';
     this.log = log;
     this.platform = platform;
   }
@@ -83,7 +91,7 @@ class RadioRAItem {
         break;
       case 'brightness':
         this.platform.getDimmer(this.deviceId, (level) => {
-          callback(null, level);
+          callback(null, parseInt(level, 10));
         });
         break;
       default:
@@ -99,6 +107,14 @@ class RadioRAItem {
 
   setBrightness(value, callback) {
     this.platform.setDimmer(this.deviceId, value, () => {
+      if (this.service) {
+        this.platform[priv].log(`UPDATING CHARACTERISTIC ${value}, ${Number(value) === 0}`);
+        this.disablePowerEvent = true;
+        this.service
+          .getCharacteristic(Characteristic.On)
+          .setValue(Number(value) === 0 ? false : true, undefined, 'fromSetValue');
+        this.disablePowerEvent = false;
+      }
       callback();
     });
   }
@@ -110,11 +126,17 @@ class RadioRAItem {
     // gets and sets over the remote api
     this.service.getCharacteristic(Characteristic.On)
       .on('get', (callback) => { this.get('power', callback); })
-      .on('set', (value, callback) => { this.setPower(value, callback); });
+      .on('set', (value, callback) => {
+        if (!this.disablePowerEvent) {
+          this.setPower(value, callback);
+        }
+      });
 
-    this.service.addCharacteristic(Characteristic.Brightness)
-      .on('get', (callback) => { this.get('brightness', callback); })
-      .on('set', (value, callback) => { this.setBrightness(value, callback); });
+    if (!this.isSwitch) {
+      this.service.addCharacteristic(Characteristic.Brightness)
+        .on('get', (callback) => { this.get('brightness', callback); })
+        .on('set', (value, callback) => { this.setBrightness(value, callback); });
+    }
 
     services.push(this.service);
 
@@ -131,6 +153,7 @@ class RadioRAItem {
 class RadioRA extends EventEmitter {
   constructor(log, config) {
     super();
+    this.setMaxListeners(0);
     log('RadioRA Platform Created');
     this[priv] = {
       ra: this,
@@ -142,6 +165,7 @@ class RadioRA extends EventEmitter {
       state: null,
       commandQueue: [],
       responderQueue: [],
+      status: {},
     };
     this.connect();
   }
@@ -152,14 +176,27 @@ class RadioRA extends EventEmitter {
 
     p.socket = net.connect(23, this[priv].config.host);
     p.socket.on('data', (data) => {
-      p.log(`RECEIVED>>${String(data)}<<`);
-      p.state(p, data);
+      p.log(`RECEIVED ${String(data).replace(/\r\n/g, '<br>')}`);
+      const str = String(data);
+      const parts = str.split('\r\n');
+      for (const line in parts) {
+        p.state(p, data);
+      }
     }).on('connect', () => {
       p.log('Connected to RadioRA controller');
-    }).on('end', () => { });
+    }).on('end', () => {
+      if (this[priv].loggedIn) {
+        p.log('Lost connection to RadioRA controller, reconnecting');
+        p.loggedIn = p.ready = false;
+        this.connect();
+      } else {
+        p.log('Connection to RadioRA controller ended');
+      }
+    });
   }
 
   disconnect() {
+    this[priv].loggedIn = false;
     this[priv].socket.end();
   }
 
@@ -170,7 +207,7 @@ class RadioRA extends EventEmitter {
       toSend += '\r\n';
     }
     if (p.ready) {
-      p.log(`Sending ${toSend}`);
+      p.log(`Sending ${toSend.replace(/\r\n/g, '')}`);
       p.socket.write(toSend);
     } else {
       p.log('Adding command to queue');
@@ -206,15 +243,27 @@ class RadioRA extends EventEmitter {
 
   getDimmer(id, callback) {
     const numId = Number(id);
+    const p = this[priv];
+    p.status[numId] = p.status[numId] || {};
+    if (!p.status[numId].inProcess && p.status[numId].level) {
+      p.log(`Returning ${p.status[numId].level} from cache`);
+      callback(p.status[numId].level);
+      return;
+    }
     const result = (msg) => {
       if (msg.type === 'status' && numId === msg.id) {
         this.removeListener(MESSAGE_RECEIVED, result);
-        callback(msg.level);
+        callback(parseFloat(msg.level));
       }
     };
-    const cmd = `?OUTPUT,${numId}`;
     this.on(MESSAGE_RECEIVED, result);
-    this.sendCommand(cmd);
+    if (!p.status[numId].inProcess) {
+      p.status[numId].inProcess = true;
+      const cmd = `?OUTPUT,${numId}`;
+      this.sendCommand(cmd);
+    } else {
+      p.log(`Waiting for existing query for ${id}`);
+    }
   }
 
   accessories(callback) {
