@@ -3,7 +3,7 @@ A very bare bones implementation of Lutron RadioRA control for Siri/HomeKit. Her
 ```
 {
             "platform": "RadioRA",
-            "host": "192.168.1.55",
+            "host": "<controller ip or hostname>",
             "username": "SOME_USERNAME",
             "password": "SOME_PASSWORD",
             "lights": [
@@ -21,4 +21,10 @@ A very bare bones implementation of Lutron RadioRA control for Siri/HomeKit. Her
         }
 ```
 
-The id comes from the RadioRA software, the serial is just made up with a guid generator. Change host, username and password to match your install as well.
+The id comes is the "Integration ID" for each light load. Keypads or other devices are not yet supported.
+You can find the Integration IDs in the DbXmlInfo.xml file via: "curl -O http://<controller>/DbXmlInfo.xml
+
+The serial is just made up with a guid generator.
+
+Change host, username and password to match your install as well.
+The default is username is "lutron" and "integration" as the password.
