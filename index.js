@@ -176,7 +176,7 @@ class RadioRA extends EventEmitter {
 
     p.socket = net.connect(23, this[priv].config.host);
     p.socket.on('data', (data) => {
-      p.log(`RECEIVED ${String(data).replace(/\r\n/g, '<br>')}`);
+      p.log.debug(`RECEIVED ${String(data).replace(/\r\n/g, '<br>')}`);
       const str = String(data);
       const parts = str.split('\r\n');
       for (const line in parts) {
@@ -207,10 +207,10 @@ class RadioRA extends EventEmitter {
       toSend += '\r\n';
     }
     if (p.ready) {
-      p.log(`Sending ${toSend.replace(/\r\n/g, '')}`);
+      p.log.debug(`Sending ${toSend.replace(/\r\n/g, '')}`);
       p.socket.write(toSend);
     } else {
-      p.log('Adding command to queue');
+      p.log.debug('Controller not ready, adding command to queue..');
       p.commandQueue.push(toSend);
     }
   }
@@ -231,7 +231,11 @@ class RadioRA extends EventEmitter {
       }
     };
     this.on(MESSAGE_RECEIVED, result);
-    let cmd = `#OUTPUT,${id},1,${level}`;
+    
+    // TODO: From map. See Lutron's "OUTPUT: Command Summary" in the integration protocol PDF.
+    let action = 1; // Set or Get Zone Level
+    
+    let cmd = `#OUTPUT,${id},${action},${level}`;
     if (fade) {
       cmd += `,${fade}`;
       if (delay) {
@@ -267,7 +271,7 @@ class RadioRA extends EventEmitter {
   }
 
   accessories(callback) {
-    this[priv].log('Fetching RadioRA devices.');
+    this[priv].log('Fetching RadioRA lights from HomeBridge config..');
     const items = [];
     for (let i = 0; i < this[priv].config.lights.length; i++) {
       items.push(new RadioRAItem(this.log, this[priv].config.lights[i], this));
