@@ -167,6 +167,7 @@ class RadioRAItem {
   getServices() {
     const services = [];
     this.service = new Service.Lightbulb(this.name);
+    this.service.RadioRAItem = this;
 
     // gets and sets over the remote api
     this.service.getCharacteristic(Characteristic.On)
@@ -216,6 +217,7 @@ class RadioRA extends EventEmitter {
       timeout: config.timeout || 4000,
     };
     this.connect();
+    module.exports.platforms[config.name || 'default'] = this;
   }
 
   connect() {
@@ -322,7 +324,9 @@ class RadioRA extends EventEmitter {
     this[priv].log('Fetching RadioRA lights from HomeBridge config..');
     const items = [];
     for (let i = 0; i < this[priv].config.lights.length; i++) {
-      items.push(new RadioRAItem(this.log, this[priv].config.lights[i], this));
+      const rrItem = new RadioRAItem(this.log, this[priv].config.lights[i], this);
+      items.push(rrItem);
+      this.accessories[this[priv].config.lights[i].id] = rrItem;
     }
     callback(items);
   }
@@ -338,5 +342,6 @@ function Homebridge(homebridge) {
 
 Homebridge.accessory = RadioRAItem;
 Homebridge.platform = RadioRA;
+Homebridge.platforms = {};
 
 module.exports = Homebridge;
