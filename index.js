@@ -70,10 +70,32 @@ function sendUsername(context, prompt) {
   context.state = sendPassword;
 }
 
+/**
+ * Make sure fn gets called exactly once after no more than maxTime
+ */
+function watchDog(maxTime, context, fn) {
+  let wasDone = false;
+  setTimeout(() => {
+    if (!wasDone) {
+      if (context) {
+        context.log(`WatchDog kicked after ${maxTime}`);
+      }
+      fn();
+    }
+  }, maxTime);
+  return (...args) => {
+    if (!wasDone) {
+      wasDone = true;
+      fn(...args);
+    }
+  };
+}
+
 class RadioRAItem {
   constructor(log, item, platform) {
     // device info
     this.name = item.name;
+    this.lastBrightness = 100;
     this.model = 'RadioRA';
     this.deviceId = item.id;
     this.serial = item.serial;
@@ -86,13 +108,14 @@ class RadioRAItem {
     switch (type) {
       case 'power':
         this.platform.getDimmer(this.deviceId, (level) => {
-          callback(null, level ? 1 : 0);
+          callback(null, !!level);
         });
         break;
       case 'brightness':
-        this.platform.getDimmer(this.deviceId, (level) => {
+        this.platform.getDimmer(this.deviceId, watchDog(2000, this, (level) => {
+          this.lastBrightness = parseInt(level, 10) || this.lastBrightness;
           callback(null, parseInt(level, 10));
-        });
+        }));
         break;
       default:
         throw new Error('Invalid Characteristic requested');
@@ -100,23 +123,23 @@ class RadioRAItem {
   }
 
   setPower(state, callback) {
-    this.platform.setDimmer(this.deviceId, state ? 100 : 0, () => {
+    this.platform.setDimmer(this.deviceId, state ? this.lastBrightness : 0, () => {
       callback();
     });
   }
 
   setBrightness(value, callback) {
-    this.platform.setDimmer(this.deviceId, value, () => {
+    this.platform.setDimmer(this.deviceId, value, watchDog(2000, this, () => {
       if (this.service) {
         this.platform[priv].log(`UPDATING CHARACTERISTIC ${value}, ${Number(value) === 0}`);
         this.disablePowerEvent = true;
         this.service
           .getCharacteristic(Characteristic.On)
-          .setValue(Number(value) === 0 ? false : true, undefined, 'fromSetValue');
+          .setValue(Number(value) !== 0, undefined, 'fromSetValue');
         this.disablePowerEvent = false;
       }
       callback();
-    });
+    }));
   }
 
   getServices() {
@@ -179,8 +202,8 @@ class RadioRA extends EventEmitter {
       p.log(`RECEIVED ${String(data).replace(/\r\n/g, '<br>')}`);
       const str = String(data);
       const parts = str.split('\r\n');
-      for (const line in parts) {
-        p.state(p, data);
+      for (const line of parts) {
+        p.state(p, line);
       }
     }).on('connect', () => {
       p.log('Connected to RadioRA controller');
