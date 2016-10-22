@@ -14,6 +14,7 @@ process.on('uncaughtException', (error) => {
 let ra;
 
 tap.test('connect', (t) => {
+  // eslint-disable-next-line no-console
   ra = new RadioRA((m) => console.log(m), {
     username: process.env.RRA_USER || 'lutron',
     password: process.env.RRA_PASS || 'integration',

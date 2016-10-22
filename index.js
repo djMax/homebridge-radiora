@@ -70,23 +70,32 @@ function sendUsername(context, prompt) {
   context.state = sendPassword;
 }
 
+let dogs = 0;
+
 /**
  * Make sure fn gets called exactly once after no more than maxTime
  */
-function watchDog(maxTime, context, fn) {
+function watchDog(name, maxTime, context, fn) {
+  const start = Date.now();
+  dogs++;
   let wasDone = false;
   setTimeout(() => {
     if (!wasDone) {
-      if (context) {
-        context.log(`WatchDog kicked after ${maxTime}`);
-      }
+      wasDone = true;
+      dogs--;
+      context.log(`${name} watch dog kicked after ${maxTime} (${dogs})`);
       fn();
     }
   }, maxTime);
-  return (...args) => {
+  return (...cbArgs) => {
+    const time = Date.now() - start;
     if (!wasDone) {
       wasDone = true;
-      fn(...args);
+      dogs--;
+      context.log(`${name} completed in ${time}ms (${dogs})`);
+      fn(...cbArgs);
+    } else {
+      context.log(`${name} callback took too long ${time}ms (${dogs})`);
     }
   };
 }
@@ -107,15 +116,19 @@ class RadioRAItem {
   get(type, callback) {
     switch (type) {
       case 'power':
-        this.platform.getDimmer(this.deviceId, (level) => {
-          callback(null, !!level);
-        });
+        this.platform.getDimmer(this.deviceId,
+          watchDog('getPower', this.platform[priv].timeout, this.platform[priv],
+            (level) => {
+              callback(null, !!level);
+            }));
         break;
       case 'brightness':
-        this.platform.getDimmer(this.deviceId, watchDog(2000, this, (level) => {
-          this.lastBrightness = parseInt(level, 10) || this.lastBrightness;
-          callback(null, parseInt(level, 10));
-        }));
+        this.platform.getDimmer(this.deviceId,
+          watchDog('getBrightness', this.platform[priv].timeout, this.platform[priv],
+            (level) => {
+              this.lastBrightness = parseInt(level, 10) || this.lastBrightness;
+              callback(null, parseInt(level, 10));
+            }));
         break;
       default:
         throw new Error('Invalid Characteristic requested');
@@ -123,23 +136,32 @@ class RadioRAItem {
   }
 
   setPower(state, callback) {
-    this.platform.setDimmer(this.deviceId, state ? this.lastBrightness : 0, () => {
-      callback();
-    });
+    this.platform[priv].log(
+      `setPower ${this.deviceId} ${state ? 'on' : 'off'} (${this.lastBrightness}%)`
+    );
+    this.platform.setDimmer(
+      this.deviceId, state ? this.lastBrightness : 0,
+      watchDog('setPower', this.platform[priv].timeout, this.platform[priv], () => callback())
+    );
   }
 
   setBrightness(value, callback) {
-    this.platform.setDimmer(this.deviceId, value, watchDog(2000, this, () => {
-      if (this.service) {
-        this.platform[priv].log(`UPDATING CHARACTERISTIC ${value}, ${Number(value) === 0}`);
-        this.disablePowerEvent = true;
-        this.service
-          .getCharacteristic(Characteristic.On)
-          .setValue(Number(value) !== 0, undefined, 'fromSetValue');
-        this.disablePowerEvent = false;
-      }
-      callback();
-    }));
+    this.platform[priv].log(
+      `setBrightness ${this.deviceId} ${value}%`
+    );
+    this.lastBrightness = value || this.lastBrightness;
+    this.platform.setDimmer(this.deviceId, value,
+      watchDog('setBrightness', this.platform[priv].timeout, this.platform[priv],
+        () => {
+          if (this.service) {
+            this.disablePowerEvent = true;
+            this.service
+              .getCharacteristic(Characteristic.On)
+              .setValue(Number(value) !== 0, undefined, 'fromSetValue');
+            this.disablePowerEvent = false;
+          }
+          callback();
+        }));
   }
 
   getServices() {
@@ -152,6 +174,8 @@ class RadioRAItem {
       .on('set', (value, callback) => {
         if (!this.disablePowerEvent) {
           this.setPower(value, callback);
+        } else {
+          callback();
         }
       });
 
@@ -189,6 +213,7 @@ class RadioRA extends EventEmitter {
       commandQueue: [],
       responderQueue: [],
       status: {},
+      timeout: config.timeout || 4000,
     };
     this.connect();
   }
@@ -199,7 +224,7 @@ class RadioRA extends EventEmitter {
 
     p.socket = net.connect(23, this[priv].config.host);
     p.socket.on('data', (data) => {
-      p.log.debug(`RECEIVED ${String(data).replace(/\r\n/g, '<br>')}`);
+      // p.log.debug(`RECEIVED ${String(data).replace(/\r\n/g, '<br>')}`);
       const str = String(data);
       const parts = str.split('\r\n');
       for (const line of parts) {
@@ -230,7 +255,7 @@ class RadioRA extends EventEmitter {
       toSend += '\r\n';
     }
     if (p.ready) {
-      p.log.debug(`Sending ${toSend.replace(/\r\n/g, '')}`);
+      // p.log.debug(`Sending ${toSend.replace(/\r\n/g, '')}`);
       p.socket.write(toSend);
     } else {
       p.log.debug('Controller not ready, adding command to queue..');
@@ -254,10 +279,10 @@ class RadioRA extends EventEmitter {
       }
     };
     this.on(MESSAGE_RECEIVED, result);
-    
+
     // TODO: From map. See Lutron's "OUTPUT: Command Summary" in the integration protocol PDF.
-    let action = 1; // Set or Get Zone Level
-    
+    const action = 1; // Set or Get Zone Level
+
     let cmd = `#OUTPUT,${id},${action},${level}`;
     if (fade) {
       cmd += `,${fade}`;
@@ -289,7 +314,7 @@ class RadioRA extends EventEmitter {
       const cmd = `?OUTPUT,${numId}`;
       this.sendCommand(cmd);
     } else {
-      p.log(`Waiting for existing query for ${id}`);
+      p.log(`Waiting for existing query for status of ${id}`);
     }
   }
 
