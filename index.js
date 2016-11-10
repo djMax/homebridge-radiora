@@ -119,7 +119,7 @@ class RadioRAItem {
         this.platform.getDimmer(this.deviceId,
           watchDog('getPower', this.platform[priv].timeout, this.platform[priv],
             (level) => {
-              callback(null, !!level);
+              callback(null, !!Number(level));
             }));
         break;
       case 'brightness':
